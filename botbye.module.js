@@ -11,7 +11,7 @@ var common_1 = require("@nestjs/common");
 var botbye_nest_core_1 = require("botbye-nest-core");
 var botbye_node_fastify_1 = require("botbye-node-fastify");
 var botbye_node_core_1 = require("botbye-node-core");
-(0, botbye_node_core_1.initPackageInfo)({ name: "NodeJS - NestJs - Fastify", version: "1.0.0" });
+(0, botbye_node_core_1.initPackageInfo)({ name: "NodeJS - NestJS - Fastify", version: "0.1.1" });
 var BotByeModule = (function () {
     function BotByeModule() {
     }
