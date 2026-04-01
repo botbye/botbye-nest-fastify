@@ -1,12 +1,12 @@
 {
   "name": "botbye-nest-fastify",
   "main": "index.js",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
   "dependencies": {
-    "botbye-nest-core": "^0.1.1",
-    "botbye-node-core": "^1.0.7",
-    "botbye-node-fastify": "^0.1.2"
+    "botbye-nest-core": "^0.1.2",
+    "botbye-node-core": "^1.0.8",
+    "botbye-node-fastify": "^0.1.3"
   },
   "devDependencies": {
     "@nestjs/common": "^11.0.0",
