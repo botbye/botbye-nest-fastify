@@ -1,220 +1,427 @@
-[BotBye!](https://botbye.com)  
-[BotBye! | Docs](https://botbye.com/docs)
+# @botbye/nest-fastify
 
-# BotBye! NestJS Fastify
+[BotBye!](https://botbye.com) integration for [NestJS](https://nestjs.com/) with [Fastify](https://fastify.dev/) applications.
+
+Full documentation: https://botbye.com/docs/server-side/node-js/nestjs/fastify
 
 ## Install
 
 ```bash
-npm i botbye-nest-fastify
+npm i @botbye/nest-fastify
 ```
-
-or
 
 ```bash
-yarn add botbye-nest-fastify
+yarn add @botbye/nest-fastify
 ```
+
+Requires `@nestjs/common >= 10` and `fastify >= 4` as peer dependencies.
+
+## Configuration
+
+Register `BotByeModule` once in your root module:
+
+```typescript
+import { Module } from "@nestjs/common";
+import { BotByeModule } from "@botbye/nest-fastify";
+
+@Module({
+  imports: [
+    BotByeModule.register({
+      // Use your project server-key
+      serverKey: "00000000-0000-0000-0000-000000000000",
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+### `init` options
+
+| Option | Type | Required | Description |
+|---|---|---|---|
+| `serverKey` | `string` | Yes | Server key from your BotBye project |
+| `url` | `string` | No | Override BotBye API endpoint (default: `https://verify.botbye.com`) |
+| `logger.level` | `"error" \| "warn" \| "info" \| "debug" \| "log"` | No | Log level (default: `"info"`) |
+| `logger.logger` | `TLogger` | No | Custom logger instance implementing `{ error, warn, info, debug, log }` |
+| `timeouts.evaluate` | `number` | No | Timeout in milliseconds for each `evaluate` call |
+| `tokenExtractor` | `(request: FastifyRequest) => string \| null \| undefined` | No* | Extracts the BotBye token from the Fastify request. *Required when using `BotByeMiddleware` — without it the middleware skips evaluation and returns an error result. |
 
 ## Usage
 
-1. Create options for `BotByeModule`.
+After registering `BotByeModule`, inject `TBotByeService` using `BOTBYE_SERVICE_DI_TOKEN` to call `evaluate` from guards, controllers, or services.
 
 ```typescript
-import { TBotByeModuleOptions } from "botbye-nest-fastify"
+import { Controller, Post, Inject, Req, ForbiddenException } from "@nestjs/common";
+import { FastifyRequest } from "fastify";
+import { BOTBYE_SERVICE_DI_TOKEN, TBotByeService } from "@botbye/nest-fastify";
 
-const botbyeModuleOptions: TBotByeModuleOptions = {
-    /* Use your server-key */
-    serverKey: '00000000-0000-0000-0000-000000000000',
+@Controller()
+export class AppController {
+  constructor(
+    @Inject(BOTBYE_SERVICE_DI_TOKEN) private readonly botbye: TBotByeService
+  ) {}
 
-    /*
-    * Function that extracts token from fastify Request object.
-    * For example, from 'x-botbye-token' header
-    */
-    tokenExtractor: (request) => request.headers['x-botbye-token'],
+  @Post("/api/submit")
+  async submit(@Req() req: FastifyRequest) {
+    const result = await this.botbye.evaluate({
+      type: "validate",
+      request: {
+        request: req,
+        // "x-botbye-token" is an example — pass the token from wherever you store it
+        token: req.headers["x-botbye-token"] as string | null,
+      },
+    });
 
-    /*
-    * Optional function that extracts customFields
-    * from fastify Request object
-    */
-    customFieldsExtractor: (request) => ({
-        example: request.headers['example'],
-    }),
-};
-```
-
-2. Register `BotByeModule` in Root module `imports` using `botbyeModuleOptions`.
-
-```typescript
-import { BotByeModule } from "botbye-nest-fastify"
-
-...
-
-@Module({
-    imports: [BotByeModule.register(botbyeModuleOptions)],
-    controllers: [AppController],
-    providers: [AppService],
-})
-class AppModule {}
-```
-
-3. Add `BotByeMiddleware`.
-
-```typescript
-import { BotByeMiddleware } from "botbye-nest-fastify"
-
-...
-
-class AppModule {
-    configure(consumer: MiddlewareConsumer) {
-        consumer
-            .apply(BotByeMiddleware)
-            /* Select routes that should be protected */
-            .forRoutes('*');
+    if (result.decision === "BLOCK") {
+      throw new ForbiddenException();
     }
-}
-```
 
-4. Use `@BotByeResponse()` decorator in controllers to process request.
-
-```typescript
-import { BotByeResponse, type TBotByeResponse } from 'botbye-nest-fastify';
-
-@Controller('some-route')
-class SomeController {
-    @Get()
-    someGet(@BotByeResponse() botbyeResponse: TBotByeResponse) {
-        const isAllowed = botbyeResponse.result?.isAllowed ?? true;
-        if (!isAllowed) {
-            /*
-            * When BotBye! not allow request
-            * throw ForbiddenException, for example
-            */
-            throw new ForbiddenException();
-        };
-        /* In other case process request as usual */
-        return "Some Response"
-    }
-}
-```
-
-### Examples of BotBye API responses:
-
-#### Bot detected:
-
-```json
-{
-  "reqId": "f77b2abd-c5d7-44f0-be4f-174b04876583",
-  "result": {
-    "isAllowed": false
-  },
-  "error": null
-}
-```
-
-#### Bot not detected:
-
-```json
-{
-  "reqId": "f77b2abd-c5d7-44f0-be4f-174b04876583",
-  "result": {
-    "isAllowed": true
-  },
-  "error": null
-}
-```
-
-#### Request banned by custom rule:
-
-```json
-{
-  "reqId": "f77b2abd-c5d7-44f0-be4f-174b04876583",
-  "result": {
-    "isAllowed": false
-  },
-  "error": {
-    "message": "Banned by rule: MY_CUSTOM_RULE"
+    // proceed normally
   }
 }
 ```
 
-#### Invalid `serverKey`:
+There are three event types — `validate`, `risk`, and `full` — each suited for a different layer of your application.
 
-```json
+---
+
+### `validate` — edge-level bot check
+
+Use at the edge — guard, route handler, middleware — when you just want to know: **was this request made by a bot?** No user or domain context needed.
+
+**Event fields:**
+
+```typescript
 {
-  "reqId": "f77b2abd-c5d7-44f0-be4f-174b04876583",
-  "result": null,
-  "error": {
-    "message": "[BotBye] Bad Request: Invalid Server Key"
+  type: "validate";
+
+  request:
+    // Option A: pass the Fastify request object directly — SDK extracts everything automatically
+    | { request: FastifyRequest; token?: string | null }
+    // Option B: construct request info manually
+    | { ip: string; headers: Record<string, string>; requestMethod?: string | null; requestUri?: string | null; token?: string | null };
+
+  customFields?: Record<string, string>;
+
+  config?: { bypassBotValidation?: boolean | null };
+}
+```
+
+The SDK extracts IP, headers, method, and URI from the Fastify request automatically. You can also pass request info manually — see Option B above. The `token` is a one-time token generated by the [BotBye client-side SDK](https://botbye.com/docs/client-side/npm-module) that contains information about the user's device. Pass whatever the client sent; if no token is received, the decision will be `"BLOCK"`.
+
+```typescript
+import { Injectable, CanActivate, ExecutionContext, Inject } from "@nestjs/common";
+import { FastifyRequest } from "fastify";
+import { BOTBYE_SERVICE_DI_TOKEN, TBotByeService } from "@botbye/nest-fastify";
+
+@Injectable()
+export class BotByeGuard implements CanActivate {
+  constructor(
+    @Inject(BOTBYE_SERVICE_DI_TOKEN) private readonly botbye: TBotByeService
+  ) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const request = context.switchToHttp().getRequest<FastifyRequest>();
+
+    const result = await this.botbye.evaluate({
+      type: "validate",
+      request: {
+        request,
+        // "x-botbye-token" is an example — pass the token from wherever you store it
+        token: request.headers["x-botbye-token"] as string | null,
+      },
+    });
+
+    return result.decision !== "BLOCK";
   }
 }
 ```
 
-## Full code example
+---
 
-`app.module.ts`
+### `risk` — domain-level risk scoring
+
+Use inside services that already know the user: auth, payments, account management. The purpose shifts from "is this a bot?" to **"is something suspicious happening for this user?"** — credential stuffing, account takeover, account sharing, logins from a new geo.
+
+**Event fields:**
 
 ```typescript
-import { MiddlewareConsumer, Module } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
-import {
-    BotByeMiddleware,
-    BotByeModule,
-    TBotByeModuleOptions,
-} from 'botbye-nest-fastify';
-import { SomeController } from './SomeModule/SomeController';
+{
+  type: "risk";
 
-const botbyeModuleOptions: TBotByeModuleOptions = {
-    /* Use your server-key */
-    serverKey: '00000000-0000-0000-0000-000000000000',
+  request:
+    // Only ip is needed at this level
+    | { ip: string; headers?: Record<string, string>; requestMethod?: string | null; requestUri?: string | null; token?: string | null }
+    // Fastify request object also accepted if convenient
+    | { request: FastifyRequest };
 
-    /* Function that extracts token from express Request object */
-    tokenExtractor: (request) => request.headers['x-botbye-token'],
+  event: {
+    type: string;   // e.g. "login", "password_change", "checkout"
+    status: "ATTEMPTED" | "SUCCESSFUL" | "FAILED" | "UNKNOWN";
+  };
 
-    /*
-    * Optional function that extracts customFields
-    * from express Request object
-    */
-    customFieldsExtractor: (request) => ({
-        example: request.headers['example'],
-    }),
-};
+  user: {
+    accountId: string;
+    username?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  };
+
+  customFields?: Record<string, string>;
+  botbyeResult?: string;
+
+  config?: { bypassBotValidation?: boolean | null };
+}
+```
+
+`event` and `user` are the key fields here — they define what action is being performed and who is performing it, which is what drives the risk score. `ip` is equally important: BotBye tracks which IPs access the account to detect patterns like account sharing, credential stuffing, and suspicious geo logins. Pass it directly as `{ ip }`, or pass the Fastify request object if that's more convenient.
+
+```typescript
+import { Injectable, Inject } from "@nestjs/common";
+import { BOTBYE_SERVICE_DI_TOKEN, TBotByeService } from "@botbye/nest-fastify";
+
+@Injectable()
+export class AuthService {
+  constructor(
+    @Inject(BOTBYE_SERVICE_DI_TOKEN) private readonly botbye: TBotByeService
+  ) {}
+
+  async onLoginAttempt(ip: string, userId: string, email: string, loginSucceeded: boolean) {
+    const result = await this.botbye.evaluate({
+      type: "risk",
+      request: { ip },
+      event: {
+        type: "login",
+        status: loginSucceeded ? "SUCCESSFUL" : "FAILED",
+      },
+      user: {
+        accountId: userId,
+        email,
+      },
+    });
+
+    if (result.decision === "BLOCK") {
+      // Lock account, trigger MFA, send alert, etc.
+    }
+  }
+}
+```
+
+---
+
+### `full` — edge check and domain scoring in one call
+
+Use when you have all context at once: raw request, token, user, and event. Equivalent to running `validate` and `risk` in a single call. A login endpoint is a typical example — it receives the HTTP request and immediately knows the user and outcome.
+
+**Event fields:**
+
+```typescript
+{
+  type: "full";
+
+  request:
+    | { request: FastifyRequest; token?: string | null }
+    | { ip: string; headers: Record<string, string>; requestMethod?: string | null; requestUri?: string | null; token?: string | null };
+
+  event: {
+    type: string;
+    status: "ATTEMPTED" | "SUCCESSFUL" | "FAILED" | "UNKNOWN";
+  };
+
+  user: {
+    accountId: string;
+    username?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  };
+
+  customFields?: Record<string, string>;
+
+  config?: { bypassBotValidation?: boolean | null };
+}
+```
+
+```typescript
+import { Injectable, Inject, ForbiddenException } from "@nestjs/common";
+import { FastifyRequest } from "fastify";
+import { BOTBYE_SERVICE_DI_TOKEN, TBotByeService } from "@botbye/nest-fastify";
+
+@Injectable()
+export class AuthService {
+  constructor(
+    @Inject(BOTBYE_SERVICE_DI_TOKEN) private readonly botbye: TBotByeService
+  ) {}
+
+  async login(request: FastifyRequest, email: string, password: string) {
+    const user = await this.findUser(email);
+    const loginSucceeded = user && (await this.checkPassword(user, password));
+
+    const result = await this.botbye.evaluate({
+      type: "full",
+      request: {
+        request,
+        // "x-botbye-token" is an example — pass the token from wherever you store it
+        token: request.headers["x-botbye-token"] as string | null,
+      },
+      event: {
+        type: "login",
+        status: loginSucceeded ? "SUCCESSFUL" : "FAILED",
+      },
+      user: {
+        accountId: user?.id ?? "unknown",
+        email,
+      },
+    });
+
+    if (result.decision === "BLOCK") {
+      throw new ForbiddenException();
+    }
+
+    // proceed normally
+  }
+}
+```
+
+---
+
+## Response
+
+`evaluate` always returns a `Promise<TEvaluationResult>`:
+
+```typescript
+type TEvaluationResult =
+  | {
+      decision: "ALLOW" | "BLOCK" | "CHALLENGE";
+      request_id: string;
+      risk_score: number;
+      scores: Record<string, number>;
+      signals: string[];
+      config: { bypass_bot_validation: boolean };
+    }
+  | {
+      decision: "ALLOW" | "BLOCK" | "CHALLENGE";
+      config: { bypass_bot_validation: boolean };
+      error: { message: string };
+    };
+```
+
+Check `result.decision` to decide how to handle the request:
+
+- `"ALLOW"` — request appears legitimate, proceed normally
+- `"BLOCK"` — bot or suspicious activity detected, block the request
+- `"CHALLENGE"` — uncertain, consider issuing a CAPTCHA, MFA, or additional verification step
+
+When the response contains an `error` field, BotBye could not evaluate the request (e.g. invalid server key). In that case `decision` defaults to `"ALLOW"` so that a misconfiguration does not block real users — but you should monitor and fix the underlying error.
+
+### Response examples
+
+Blocked (bot detected):
+
+```json
+{
+  "request_id": "f77b2abd-c5d7-44f0-be4f-174b04876583",
+  "decision": "BLOCK",
+  "risk_score": 0.95,
+  "scores": { "bot": 0.95 },
+  "signals": ["AutomationTool"],
+  "config": { "bypass_bot_validation": false }
+}
+```
+
+Allowed:
+
+```json
+{
+  "request_id": "f77b2abd-c5d7-44f0-be4f-174b04876583",
+  "decision": "ALLOW",
+  "risk_score": 0.05,
+  "scores": { "bot": 0.05, "ato": 0.02 },
+  "signals": [],
+  "config": { "bypass_bot_validation": false }
+}
+```
+
+Challenge:
+
+```json
+{
+  "request_id": "f77b2abd-c5d7-44f0-be4f-174b04876583",
+  "decision": "CHALLENGE",
+  "risk_score": 0.65,
+  "scores": { "bot": 0.65 },
+  "signals": ["SuspiciousFingerprint"],
+  "challenge": { "type": "captcha", "token": "..." },
+  "config": { "bypass_bot_validation": false }
+}
+```
+
+Invalid `serverKey`:
+
+```json
+{
+  "decision": "ALLOW",
+  "config": { "bypass_bot_validation": true },
+  "error": { "message": "[BotBye] Bad Request: Invalid Server Key" }
+}
+```
+
+## Middleware usage
+
+`BotByeMiddleware` evaluates every incoming request automatically and stores the result on the request object. Use the `@BotByeResponse()` parameter decorator to access the result in a controller without calling `evaluate` manually.
+
+Provide a `tokenExtractor` in module options so the middleware knows where to find the BotBye token:
+
+```typescript
+// app.module.ts
+import { Module, NestModule, MiddlewareConsumer } from "@nestjs/common";
+import { BotByeModule, BotByeMiddleware } from "@botbye/nest-fastify";
 
 @Module({
-    imports: [BotByeModule.register(botbyeModuleOptions)],
-    controllers: [AppController, SomeController],
-    providers: [AppService],
+  imports: [
+    BotByeModule.register({
+      // Use your project server-key
+      serverKey: "00000000-0000-0000-0000-000000000000",
+      // "x-botbye-token" is an example — pass the token from wherever you store it
+      tokenExtractor: (req) => req.headers["x-botbye-token"] as string | undefined,
+    }),
+  ],
 })
-class AppModule {
-    configure(consumer: MiddlewareConsumer) {
-        consumer
-            .apply(BotByeMiddleware)
-            /* Select routes that should be protected */
-            .forRoutes('*');
-    }
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Global: protect all routes
+    consumer.apply(BotByeMiddleware).forRoutes("*");
+  }
 }
 ```
 
-`some.controller.ts`
+Access the result in a controller with `@BotByeResponse()`:
 
 ```typescript
-import {Controller, ForbiddenException, Get} from '@nestjs/common';
-import { BotByeResponse, type TBotByeResponse } from 'botbye-nest-fastify';
+// app.controller.ts
+import { Controller, Post, ForbiddenException } from "@nestjs/common";
+import { BotByeResponse } from "@botbye/nest-fastify";
+import type { TEvaluationResult } from "@botbye/nest-fastify";
 
-@Controller('some-route')
-class SomeController {
-    @Get()
-    someGet(@BotByeResponse() botbyeResponse: TBotByeResponse) {
-        const isAllowed = botbyeResponse.result?.isAllowed ?? true;
-        if (!isAllowed) {
-            /*
-            * When BotBye! not allow request
-            * throw ForbiddenException, for example
-            */
-            throw new ForbiddenException();
-        };
-        /* In other case process request as usual */
-        return "Some Response"
+@Controller()
+export class AppController {
+  @Post("/api/submit")
+  async submit(@BotByeResponse() result: TEvaluationResult) {
+    if (result.decision === "BLOCK") {
+      throw new ForbiddenException();
     }
+    // proceed normally
+  }
 }
 ```
+
+To apply middleware only to specific routes, replace `.forRoutes("*")` with a path or route descriptor:
+
+```typescript
+// Scoped: protect only routes registered under "protected"
+consumer.apply(BotByeMiddleware).forRoutes("protected");
+```
+
+## Documentation
+
+- Web: https://botbye.com/docs/server-side/node-js/nestjs/fastify
+- Markdown (for AI tools and agents): https://botbye.com/docs/server-side/node-js/nestjs/fastify.md
